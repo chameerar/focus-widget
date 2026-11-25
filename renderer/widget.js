@@ -9,6 +9,7 @@
   const MAX_MIN = 99;
   const N = 24;                // ring segments
   const OFF = 0.13;            // opacity of an unlit segment
+  const ARM_AHEAD = 15000;     // ms before zero when the alarm audio starts
   const COLORS = ['#F2433B', '#F7A51E', '#58CF4A', '#3EAEF0']; // 12 to 3, 3 to 6, 6 to 9, 9 to 12 o'clock
   const STORE = 'focus-widget:v1';
 
@@ -148,6 +149,8 @@
   /* ---------- Sound, scheduled ahead so it rings on time ---------- */
   let ctx = null;
   let alarmNodes = [];
+  let quietAt = 0;   // audio clock time when the last scheduled sound ends
+  let prevAudioTime = Infinity; // currentTime on the previous arming tick
 
   function ensureAudio() {
     try {
@@ -156,9 +159,25 @@
         if (!AC) return null;
         ctx = new AC();
       }
-      if (ctx.state === 'suspended') ctx.resume();
+      ctx.resume();  // unconditional: also undoes a syncAudio() suspend that hasn't settled yet
       return ctx;
     } catch (e) { return null; }
+  }
+  // Runs on the render tick. A running context renders silence nonstop, so it only runs from
+  // ARM_AHEAD before zero until the chimes end. Once armed, the chime rings on the audio clock.
+  function syncAudio() {
+    const rem = S.endAt - Date.now();
+    if (S.mode === 'running' && P.sound && !alarmNodes.length && rem <= ARM_AHEAD) {
+      const c = ensureAudio();
+      if (!c) return;
+      // Schedule once the clock is seen moving: a context that is still starting its
+      // audio device can report 'running' while currentTime stands still.
+      const moving = c.state === 'running' && c.currentTime > prevAudioTime;
+      prevAudioTime = c.currentTime;
+      if (moving) scheduleAlarm(rem);
+    } else if (ctx && ctx.state === 'running' && ctx.currentTime > quietAt) {
+      ctx.suspend();
+    }
   }
   function beep(at, freq, dur, vol) {
     const o = ctx.createOscillator();
@@ -172,11 +191,13 @@
     g.connect(ctx.destination);
     o.start(at);
     o.stop(at + dur + 0.03);
+    quietAt = Math.max(quietAt, at + dur + 0.03);
     return o;
   }
   function cancelAlarm() {
     alarmNodes.forEach((o) => { try { o.disconnect(); } catch (e) {} try { o.stop(0); } catch (e) {} });
     alarmNodes = [];
+    if (ctx) quietAt = Math.min(quietAt, ctx.currentTime + 0.25); // let a confirm chime finish
   }
   function scheduleAlarm(msFromNow) {
     cancelAlarm();
@@ -216,7 +237,6 @@
     S.isExtension = false;
     S.endAt = Date.now() + S.duration;
     S.mode = 'running';
-    scheduleAlarm(S.duration);
     sweep();
     announce(`Timer started, ${S.duration / 60000} minutes.`);
     stateChanged();
@@ -233,7 +253,6 @@
     if (S.mode !== 'paused') return;
     S.endAt = Date.now() + S.remaining;
     S.mode = 'running';
-    scheduleAlarm(S.remaining);
     announce('Resumed.');
     stateChanged();
   }
@@ -285,7 +304,7 @@
       const diff = next - rem;
       S.endAt += diff;
       S.sessionTotal = Math.max(next, S.sessionTotal + diff);
-      scheduleAlarm(next);
+      cancelAlarm();                         // syncAudio() re-arms it for the new end
       render();
     } else if (S.mode === 'paused') {
       const next = Math.min(cap, Math.max(1000, S.remaining + step));
@@ -298,7 +317,6 @@
       S.isExtension = true;
       S.endAt = Date.now() + 60000;
       S.mode = 'running';
-      scheduleAlarm(60000);
       announce('One more minute.');
       stateChanged();
     }
@@ -306,12 +324,8 @@
   function toggleSound() {
     P.sound = !P.sound;
     save();
-    if (P.sound) {
-      confirmChime();
-      if (S.mode === 'running') scheduleAlarm(S.endAt - Date.now());
-    } else {
-      cancelAlarm();
-    }
+    if (P.sound) confirmChime();
+    else cancelAlarm();
     device.dataset.sound = P.sound ? 'on' : 'off';
     announce(P.sound ? 'Sound on.' : 'Sound off.');
     reportState();
@@ -344,7 +358,7 @@
   }
 
   /* ---------- Rendering ---------- */
-  let lastMain = '', lastClock = '', lastTitle = null;
+  let lastMain = '', lastClock = '', lastTitle = null, lastHandle = 0;
 
   function renderRing(ratio) {
     const lit = Math.max(0, Math.min(1, ratio)) * N;
@@ -355,6 +369,8 @@
     }
   }
   function positionHandle() {
+    if (S.duration === lastHandle) return;   // rewriting cx/cy forces a layout even when unchanged
+    lastHandle = S.duration;
     const [x, y] = pt(131, Math.min(S.duration, 3600000) / 3600000 * 360);
     handle.setAttribute('cx', x.toFixed(2));
     handle.setAttribute('cy', y.toFixed(2));
@@ -380,7 +396,8 @@
     } else {
       const rem = S.mode === 'running' ? S.endAt - t : S.remaining;
       secs = Math.ceil(rem / 1000);
-      ratio = S.mode === 'idle' ? Math.min(S.duration, 3600000) / 3600000 : rem / S.sessionTotal;
+      // Whole seconds, so the ring repaints together with the digits, once a second.
+      ratio = S.mode === 'idle' ? Math.min(S.duration, 3600000) / 3600000 : secs * 1000 / S.sessionTotal;
     }
     const mm = Math.floor(secs / 60), ss = secs % 60;
     const str = pad2(mm) + pad2(ss);
@@ -410,11 +427,23 @@
     sweepTimer = setTimeout(() => ringG.classList.remove('sweep'), N * 22 + 400);
   }
 
+  // Paused digits and the finished ring blink. A CSS animation would redraw every frame, so flip a class instead.
+  let blinkTimer = 0;
+  function blink() {
+    clearTimeout(blinkTimer);
+    device.classList.remove('dim');
+    const half = { paused: 700, done: 500 }[S.mode];
+    if (!half) return;
+    const flip = () => { device.classList.toggle('dim'); blinkTimer = setTimeout(flip, half); };
+    blinkTimer = setTimeout(flip, half);
+  }
+
   function reportState() {
     if (api) api.reportState({ mode: S.mode, sound: P.sound, stats: statsText() });
   }
   function stateChanged() {
     device.dataset.mode = S.mode;
+    blink();
     const label = { idle: 'Start (Space)', running: 'Pause (Space)', paused: 'Resume (Space)', done: 'Dismiss (Space)' }[S.mode];
     primaryB.title.textContent = label;
     digitsTitle.textContent = label;
@@ -527,6 +556,6 @@
   /* ---------- Go ---------- */
   device.dataset.sound = P.sound ? 'on' : 'off';
   stateChanged();
-  setInterval(render, 200);
+  setInterval(() => { render(); syncAudio(); }, 200);
   setInterval(reportState, 60000);           // keeps the day's tally in the menu current after midnight
 })();

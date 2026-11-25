@@ -50,11 +50,12 @@ body{
 
 /* Ring */
 .seg{transition:opacity .35s ease}
+/* While running, the ring changes once a second; easing each step would keep it animating nonstop. */
+[data-mode="running"] .seg{transition:none}
 .ring.sweep .seg{transition:opacity .28s ease calc(var(--i) * 22ms)}
 [data-mode="idle"] .ring{cursor:grab}
 .device.dragging .ring,.device.dragging #screen{cursor:grabbing}
-[data-mode="done"] .seg{animation:flash 1s steps(1,end) infinite}
-@keyframes flash{50%{opacity:.14}}
+[data-mode="done"].dim .ring{opacity:.14}   /* .dim is toggled by blink() in widget.js */
 .handle{fill:#fff;stroke:#000;stroke-width:2.5;opacity:0;transition:opacity .2s ease;pointer-events:none}
 [data-mode="idle"] .handle{opacity:1}
 
@@ -65,8 +66,7 @@ body{
 .main-digits{filter:drop-shadow(0 0 3px rgba(255,255,255,.28))}
 [data-mode="done"] .main-digits .seg7.on,
 [data-mode="done"] .main-digits .colon{fill:var(--alarm)}
-[data-mode="paused"] .main-digits{animation:blink 1.4s steps(1,end) infinite}
-@keyframes blink{50%{opacity:.25}}
+[data-mode="paused"].dim .main-digits{opacity:.25}
 .digits-hit{fill:transparent;cursor:pointer}
 
 .clock{transition:opacity .18s ease}
@@ -114,6 +114,6 @@ body{
 
 @media (prefers-reduced-motion: reduce){
   .seg,.ring.sweep .seg,.handle,.hourglass,.pad,.presets,.clock{transition:none}
-  [data-mode="done"] .seg{animation:none}
-  [data-mode="paused"] .main-digits{animation:none;opacity:.55}
+  [data-mode="done"].dim .ring{opacity:1}
+  [data-mode="paused"] .main-digits,[data-mode="paused"].dim .main-digits{opacity:.55}
 }

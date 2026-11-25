@@ -8,7 +8,7 @@ const fs = require('node:fs');
 // inside the widget, so the chime must be allowed to play without a page gesture.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
-const SIZES = { small: 240, medium: 300, large: 380 };
+const SIZES = { small: 180, medium: 300, large: 380 };
 const PRESETS = [5, 10, 15, 25, 30, 45, 60];
 const MODES = ['idle', 'running', 'paused', 'done'];
 

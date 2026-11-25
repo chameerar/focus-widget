@@ -1,0 +1,16 @@
+# Weekly update checks. The cooldown skips releases younger than two weeks,
+# which gives the community time to catch a compromised package first.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14

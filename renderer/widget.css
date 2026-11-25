@@ -1,0 +1,119 @@
+:root{
+  --body-hi:#2C2D32;
+  --body-lo:#111215;
+  --lcd:#F2F5F7;
+  --alarm:#FF5547;
+  --focus:#72BCF5;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%;background:transparent;overflow:hidden}
+body{
+  display:grid;place-items:center;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"Helvetica Neue",Arial,sans-serif;
+  -webkit-user-select:none;user-select:none;cursor:default;
+}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* The cube face. Its black frame is the handle for moving the widget. */
+.device{position:relative;width:88vmin;height:88vmin}
+.face{
+  position:absolute;inset:0;border-radius:21%;display:grid;place-items:center;
+  background:
+    radial-gradient(120% 90% at 22% 12%,rgba(255,255,255,.09),transparent 55%),
+    linear-gradient(150deg,var(--body-hi),var(--body-lo) 62%);
+  box-shadow:
+    0 2.4vmin 3.4vmin -1.6vmin rgba(0,0,0,.6),
+    inset 0 1px 0 rgba(255,255,255,.10),
+    inset 0 -3px 6px rgba(0,0,0,.55),
+    inset 0 0 0 1px rgba(255,255,255,.05);
+  -webkit-app-region:drag;app-region:drag;
+}
+.dimple{
+  position:absolute;width:3%;aspect-ratio:1;border-radius:50%;background:#0b0c0e;
+  box-shadow:inset 0 1px 1px rgba(0,0,0,.8),0 1px 0 rgba(255,255,255,.07);
+}
+.dimple.left{left:5.5%;top:34%}
+.dimple.right{right:5.5%;bottom:30%}
+.bezel{
+  position:relative;width:80%;aspect-ratio:1;border-radius:50%;background:#000;padding:2.5%;
+  box-shadow:0 0 0 3px #0c0d0f,0 0 0 4px rgba(255,255,255,.05),inset 0 3px 10px rgba(0,0,0,.9);
+  -webkit-app-region:no-drag;app-region:no-drag;
+}
+.bezel::after{
+  content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;
+  background:linear-gradient(140deg,rgba(255,255,255,.07),rgba(255,255,255,0) 38%);
+}
+#screen{display:block;width:100%;height:100%;overflow:visible;touch-action:none;border-radius:50%}
+#screen:focus{outline:none}
+#screen:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+
+/* Ring */
+.seg{transition:opacity .35s ease}
+.ring.sweep .seg{transition:opacity .28s ease calc(var(--i) * 22ms)}
+[data-mode="idle"] .ring{cursor:grab}
+.device.dragging .ring,.device.dragging #screen{cursor:grabbing}
+[data-mode="done"] .seg{animation:flash 1s steps(1,end) infinite}
+@keyframes flash{50%{opacity:.14}}
+.handle{fill:#fff;stroke:#000;stroke-width:2.5;opacity:0;transition:opacity .2s ease;pointer-events:none}
+[data-mode="idle"] .handle{opacity:1}
+
+/* Digits */
+.seg7{fill:rgba(255,255,255,.055)}
+.seg7.on{fill:var(--lcd)}
+.colon{fill:var(--lcd)}
+.main-digits{filter:drop-shadow(0 0 3px rgba(255,255,255,.28))}
+[data-mode="done"] .main-digits .seg7.on,
+[data-mode="done"] .main-digits .colon{fill:var(--alarm)}
+[data-mode="paused"] .main-digits{animation:blink 1.4s steps(1,end) infinite}
+@keyframes blink{50%{opacity:.25}}
+.digits-hit{fill:transparent;cursor:pointer}
+
+.clock{transition:opacity .18s ease}
+.clock .seg7{fill:rgba(255,255,255,.04)}
+.clock .seg7.on,.clock .colon{fill:#D9DFE3}
+.ampm{fill:#9AA2A8;font-weight:600;font-size:10px}
+
+/* Status icons */
+.hit{fill:transparent}
+.bell{cursor:pointer}
+.bell-body,.bell-clapper{fill:#8ED2FF;transition:fill .2s}
+.bell-slash{fill:none;stroke:#8B9196;stroke-width:1.7;stroke-linecap:round;opacity:0}
+[data-sound="off"] .bell-body,[data-sound="off"] .bell-clapper{fill:#3F454B}
+[data-sound="off"] .bell-slash{opacity:1}
+.hourglass{fill:var(--lcd);opacity:.3;transition:opacity .2s}
+[data-mode="running"] .hourglass{opacity:1}
+[data-mode="paused"] .hourglass{opacity:.6}
+[data-mode="done"] .hourglass{fill:var(--alarm);opacity:1}
+
+/* Controls tucked into the dial: shown while the pointer is over the screen */
+.pad,.presets{opacity:0;transition:opacity .18s ease}
+#screen:hover .pad,#screen:focus-visible .pad{opacity:1}
+#screen:hover .clock,#screen:focus-visible .clock{opacity:0}
+[data-mode="idle"] #screen:hover .presets,[data-mode="idle"] #screen:focus-visible .presets{opacity:1}
+[data-mode]:not([data-mode="idle"]) .presets{display:none}
+
+.pad-btn{cursor:pointer}
+.pad-bg{fill:rgba(255,255,255,.09);transition:fill .15s ease}
+.pad-btn:hover .pad-bg{fill:rgba(255,255,255,.2)}
+.icon{fill:var(--lcd)}
+.icon-stroke{fill:none;stroke:var(--lcd);stroke-width:2.6;stroke-linecap:round}
+.pad-text{fill:var(--lcd);font-weight:700;font-size:14px}
+.pad .pause,.pad .stop{display:none}
+[data-mode="running"] .pad .play{display:none}
+[data-mode="running"] .pad .pause{display:inline}
+[data-mode="done"] .pad .play{display:none}
+[data-mode="done"] .pad .stop{display:inline}
+[data-mode="idle"] .pad-btn.reset{opacity:.3;pointer-events:none}
+
+.preset{cursor:pointer}
+.preset-bg{fill:rgba(0,0,0,.72);stroke:rgba(255,255,255,.22);stroke-width:1;transition:fill .15s ease,stroke .15s ease}
+.preset:hover .preset-bg{fill:#fff;stroke:#fff}
+.preset-label{fill:var(--lcd);font-weight:700;font-size:15px}
+.preset:hover .preset-label{fill:#000}
+
+@media (prefers-reduced-motion: reduce){
+  .seg,.ring.sweep .seg,.handle,.hourglass,.pad,.presets,.clock{transition:none}
+  [data-mode="done"] .seg{animation:none}
+  [data-mode="paused"] .main-digits{animation:none;opacity:.55}
+}

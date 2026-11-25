@@ -1,7 +1,7 @@
 {
   "name": "focus-widget",
   "productName": "Focus Widget",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A desktop countdown widget with a segmented dial and quick timers.",
   "keywords": [
     "timer",

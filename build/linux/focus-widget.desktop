@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Focus Widget
+Comment=A desktop countdown widget with a segmented dial and quick timers
+Exec=focus-widget
+Icon=focus-widget
+Terminal=false
+Categories=Utility;
+StartupWMClass=focus-widget

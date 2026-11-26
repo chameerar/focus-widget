@@ -7,7 +7,7 @@
   <key>CFBundleDisplayName</key>
   <string>Focus Widget</string>
   <key>CFBundleIdentifier</key>
-  <string>com.example.focuswidget</string>
+  <string>io.github.chameerar.focuswidget</string>
   <key>CFBundleExecutable</key>
   <string>focus-widget</string>
   <key>CFBundleIconFile</key>

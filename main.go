@@ -31,7 +31,7 @@ var trayIcon []byte
 var measureHook func(*App)
 
 // instanceID keeps the app single-instance; measurement builds use their own.
-var instanceID = "com.example.focuswidget"
+var instanceID = "io.github.chameerar.focuswidget"
 
 func main() {
 	store, err := NewStore()

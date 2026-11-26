@@ -1,17 +1,16 @@
-// Maps the page's window.widget calls onto the Wails runtime. Under Electron, preload.js provides window.widget.
+// Connects the page to the app through the Wails runtime. Absent in a browser preview.
+// These are the only calls the page can make; Widget in app.go checks each one.
 (() => {
   'use strict';
   const W = window.wails;
   if (!W) return;
   const call = (method, ...args) => W.Call.ByName(`main.Widget.${method}`, ...args);
-  // The right-click menu opens where the pointer is.
-  let x = 0, y = 0;
-  document.addEventListener('contextmenu', (e) => { x = e.clientX; y = e.clientY; }, true);
+  const quiet = (p) => p.catch((err) => console.warn(err));
   window.widget = {
-    onCommand(cb) { W.Events.On('widget:command', (e) => cb(e.data)); },
-    reportState(state) { call('ReportState', state); },
-    setTitle(text) { call('SetTitle', text); },
-    openMenu() { call('OpenMenu', x, y); },
-    notify(body) { call('Notify', body); }
+    getState: () => call('GetState'),
+    ready: () => quiet(call('Ready')),
+    act: (type, minutes) => quiet(call('Act', { type, minutes: minutes || 0 })),
+    openMenu: (x, y) => quiet(call('OpenMenu', Math.round(x), Math.round(y))),
+    onState: (cb) => W.Events.On('widget:state', (e) => cb(e.data))
   };
 })();

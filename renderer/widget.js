@@ -1,21 +1,18 @@
 (() => {
   'use strict';
 
-  // Present inside the desktop app; absent if the page is opened in a normal browser for a preview.
+  // Present inside the app; absent if the page is opened in a normal browser for a preview.
+  // The app owns the timer, the sound and the settings. This page draws the state it is sent.
   const api = window.widget || null;
 
   const SVGNS = 'http://www.w3.org/2000/svg';
   const PRESETS = [5, 10, 15, 25, 30, 45, 60];
-  const MAX_MIN = 99;
   const N = 24;                // ring segments
   const OFF = 0.13;            // opacity of an unlit segment
-  const ARM_AHEAD = 15000;     // ms before zero when the alarm audio starts
   const COLORS = ['#F2433B', '#F7A51E', '#58CF4A', '#3EAEF0']; // 12 to 3, 3 to 6, 6 to 9, 9 to 12 o'clock
-  const STORE = 'focus-widget:v1';
 
   const $ = (id) => document.getElementById(id);
   const pad2 = (n) => String(n).padStart(2, '0');
-  const clampMin = (m) => Math.min(MAX_MIN, Math.max(1, Math.round(m)));
 
   function el(tag, attrs, parent) {
     const e = document.createElementNS(SVGNS, tag);
@@ -24,30 +21,12 @@
     return e;
   }
 
-  /* ---------- Saved preferences and today's tally ---------- */
-  function load() {
-    try {
-      const v = JSON.parse(localStorage.getItem(STORE));
-      return v && typeof v === 'object' ? v : {};
-    } catch (e) { return {}; }
-  }
-  function save() {
-    try { localStorage.setItem(STORE, JSON.stringify(P)); } catch (e) { /* storage unavailable */ }
-  }
-  const P = Object.assign({ sound: true, lastMinutes: 25, day: '', count: 0, minutes: 0 }, load());
-  P.sound = P.sound !== false;
-
-  const firstMin = clampMin(Number(P.lastMinutes) || 25);
-  const S = {
-    mode: 'idle',                    // idle | running | paused | done
-    duration: firstMin * 60000,      // the length you set
-    remaining: firstMin * 60000,     // used while idle or paused
-    sessionTotal: firstMin * 60000,  // full length of the current run (ring scale)
-    endAt: 0,
-    isExtension: false,
-    dragging: false,
-    lastDrag: null
-  };
+  // The latest snapshot from the app. A browser preview shows an idle 25-minute dial.
+  let S = { mode: 'idle', duration: 1500000, remaining: 1500000, sessionTotal: 1500000,
+            endAt: 0, isExtension: false, sound: true, seq: -1 };
+  let dragging = false;
+  let dragMin = null;          // minutes under the pointer while dragging the ring, until the app confirms
+  let lastDrag = null;
 
   /* ---------- Seven-segment digits ---------- */
   const SEGMAP = { '0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd',
@@ -146,219 +125,21 @@
     el('text', { class: 'preset-label', 'text-anchor': 'middle', 'dominant-baseline': 'central', y: 0.5 }, g).textContent = String(m);
   });
 
-  /* ---------- Sound, scheduled ahead so it rings on time ---------- */
-  let ctx = null;
-  let alarmNodes = [];
-  let quietAt = 0;   // audio clock time when the last scheduled sound ends
-  let prevAudioTime = Infinity; // currentTime on the previous arming tick
-
-  function ensureAudio() {
-    try {
-      if (!ctx) {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return null;
-        ctx = new AC();
-      }
-      ctx.resume();  // unconditional: also undoes a syncAudio() suspend that hasn't settled yet
-      return ctx;
-    } catch (e) { return null; }
-  }
-  // Runs on the render tick. A running context renders silence nonstop, so it only runs from
-  // ARM_AHEAD before zero until the chimes end. Once armed, the chime rings on the audio clock.
-  function syncAudio() {
-    const rem = S.endAt - Date.now();
-    if (S.mode === 'running' && P.sound && !alarmNodes.length && rem <= ARM_AHEAD) {
-      const c = ensureAudio();
-      if (!c) return;
-      // Schedule once the clock is seen moving: a context that is still starting its
-      // audio device can report 'running' while currentTime stands still.
-      const moving = c.state === 'running' && c.currentTime > prevAudioTime;
-      prevAudioTime = c.currentTime;
-      if (moving) scheduleAlarm(rem);
-    } else if (ctx && ctx.state === 'running' && ctx.currentTime > quietAt) {
-      ctx.suspend();
-    }
-  }
-  function beep(at, freq, dur, vol) {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.value = freq;
-    g.gain.setValueAtTime(0.0001, at);
-    g.gain.exponentialRampToValueAtTime(vol, at + 0.012);
-    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.start(at);
-    o.stop(at + dur + 0.03);
-    quietAt = Math.max(quietAt, at + dur + 0.03);
-    return o;
-  }
-  function cancelAlarm() {
-    alarmNodes.forEach((o) => { try { o.disconnect(); } catch (e) {} try { o.stop(0); } catch (e) {} });
-    alarmNodes = [];
-    if (ctx) quietAt = Math.min(quietAt, ctx.currentTime + 0.25); // let a confirm chime finish
-  }
-  function scheduleAlarm(msFromNow) {
-    cancelAlarm();
-    if (!P.sound) return;
-    const c = ensureAudio();
-    if (!c) return;
-    const t0 = c.currentTime + Math.max(0, msFromNow) / 1000;
-    for (let r = 0; r < 12; r++) {          // about 26 seconds of chimes unless dismissed
-      const base = t0 + r * 2.2;
-      alarmNodes.push(beep(base, 880, 0.12, 0.28));
-      alarmNodes.push(beep(base + 0.18, 880, 0.12, 0.28));
-      alarmNodes.push(beep(base + 0.36, 1175, 0.2, 0.28));
-    }
-  }
-  function confirmChime() {
-    const c = ensureAudio();
-    if (c) beep(c.currentTime + 0.02, 1175, 0.12, 0.18);
-  }
-
-  /* ---------- Timer actions ---------- */
+  /* ---------- Announcements ---------- */
   const live = $('live');
   const announce = (msg) => { live.textContent = ''; setTimeout(() => { live.textContent = msg; }, 30); };
-
-  function setDuration(min) {
-    const m = clampMin(min);
-    S.duration = m * 60000;
-    S.remaining = S.duration;
-    S.sessionTotal = S.duration;
-    P.lastMinutes = m;
-    save();
-    render();
-  }
-  function start() {
-    if (S.mode !== 'idle') return;
-    S.remaining = S.duration;
-    S.sessionTotal = S.duration;
-    S.isExtension = false;
-    S.endAt = Date.now() + S.duration;
-    S.mode = 'running';
-    sweep();
-    announce(`Timer started, ${S.duration / 60000} minutes.`);
-    stateChanged();
-  }
-  function pause() {
-    if (S.mode !== 'running') return;
-    S.remaining = Math.max(0, S.endAt - Date.now());
-    S.mode = 'paused';
-    cancelAlarm();
-    announce('Paused.');
-    stateChanged();
-  }
-  function resume() {
-    if (S.mode !== 'paused') return;
-    S.endAt = Date.now() + S.remaining;
-    S.mode = 'running';
-    announce('Resumed.');
-    stateChanged();
-  }
-  function reset() {
-    cancelAlarm();
-    S.mode = 'idle';
-    S.remaining = S.duration;
-    S.sessionTotal = S.duration;
-    announce('Timer reset.');
-    stateChanged();
-  }
-  function finish() {
-    S.mode = 'done';
-    recordFinish();
-    if (P.sound && alarmNodes.length === 0) scheduleAlarm(0);
-    announce('Time’s up.');
-    if (api) {
-      api.notify(S.isExtension
-        ? 'Your extra minute is over.'
-        : `Your ${Math.round(S.sessionTotal / 60000)} minute timer has finished.`);
-    }
-    stateChanged();
-  }
-  function startPreset(m) {
-    cancelAlarm();
-    S.mode = 'idle';
-    setDuration(m);
-    start();
-  }
-  function startAgain() {
-    cancelAlarm();
-    S.mode = 'idle';
-    start();
-  }
-  function primaryAction() {
-    if (S.mode === 'idle') start();
-    else if (S.mode === 'running') pause();
-    else if (S.mode === 'paused') resume();
-    else reset();
-  }
-  function adjust(delta) {
-    const step = delta * 60000;
-    const cap = MAX_MIN * 60000 + 59000;
-    if (S.mode === 'idle') {
-      setDuration(S.duration / 60000 + delta);
-    } else if (S.mode === 'running') {
-      const rem = S.endAt - Date.now();
-      const next = Math.min(cap, Math.max(1000, rem + step));
-      const diff = next - rem;
-      S.endAt += diff;
-      S.sessionTotal = Math.max(next, S.sessionTotal + diff);
-      cancelAlarm();                         // syncAudio() re-arms it for the new end
-      render();
-    } else if (S.mode === 'paused') {
-      const next = Math.min(cap, Math.max(1000, S.remaining + step));
-      S.sessionTotal = Math.max(next, S.sessionTotal + (next - S.remaining));
-      S.remaining = next;
-      render();
-    } else if (S.mode === 'done' && delta > 0) {
-      cancelAlarm();
-      S.sessionTotal = 60000;
-      S.isExtension = true;
-      S.endAt = Date.now() + 60000;
-      S.mode = 'running';
-      announce('One more minute.');
-      stateChanged();
-    }
-  }
-  function toggleSound() {
-    P.sound = !P.sound;
-    save();
-    if (P.sound) confirmChime();
-    else cancelAlarm();
-    device.dataset.sound = P.sound ? 'on' : 'off';
-    announce(P.sound ? 'Sound on.' : 'Sound off.');
-    reportState();
-  }
-
-  /* ---------- Today's tally ---------- */
-  function todayKey() {
-    const d = new Date();
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-  }
-  function fmtMinutes(m) {
-    m = Math.round(m);
-    if (m < 60) return `${m} min`;
-    const h = Math.floor(m / 60), r = m % 60;
-    return r ? `${h} h ${r} min` : `${h} h`;
-  }
-  function recordFinish() {
-    const day = todayKey();
-    if (P.day !== day) { P.day = day; P.count = 0; P.minutes = 0; }
-    P.minutes += S.sessionTotal / 60000;
-    if (!S.isExtension) P.count += 1;
-    save();
-  }
-  function statsText() {
-    const fresh = P.day !== todayKey();
-    const count = fresh ? 0 : P.count;
-    const minutes = fresh ? 0 : P.minutes;
-    if (count === 0 && minutes < 1) return 'No timers finished today yet.';
-    return `Today: ${count} ${count === 1 ? 'timer' : 'timers'}, ${fmtMinutes(minutes)} focused`;
-  }
+  const SAY = {
+    start: (s) => `Timer started, ${Math.round(s.duration / 60000)} minutes.`,
+    pause: () => 'Paused.',
+    resume: () => 'Resumed.',
+    reset: () => 'Timer reset.',
+    finish: () => 'Time’s up.',
+    extend: () => 'One more minute.',
+    sound: (s) => (s.sound ? 'Sound on.' : 'Sound off.')
+  };
 
   /* ---------- Rendering ---------- */
-  let lastMain = '', lastClock = '', lastTitle = null, lastHandle = 0;
+  let lastMain = '', lastClock = '', lastHandle = 0;
 
   function renderRing(ratio) {
     const lit = Math.max(0, Math.min(1, ratio)) * N;
@@ -368,10 +149,10 @@
       segs[i].style.opacity = (OFF + (1 - OFF) * v).toFixed(3);
     }
   }
-  function positionHandle() {
-    if (S.duration === lastHandle) return;   // rewriting cx/cy forces a layout even when unchanged
-    lastHandle = S.duration;
-    const [x, y] = pt(131, Math.min(S.duration, 3600000) / 3600000 * 360);
+  function positionHandle(duration) {
+    if (duration === lastHandle) return;     // rewriting cx/cy forces a layout even when unchanged
+    lastHandle = duration;
+    const [x, y] = pt(131, Math.min(duration, 3600000) / 3600000 * 360);
     handle.setAttribute('cx', x.toFixed(2));
     handle.setAttribute('cy', y.toFixed(2));
   }
@@ -385,40 +166,40 @@
     s.split('').forEach((c, i) => clockDigits[i].set(c));
     ampm.textContent = pm ? 'pm' : 'am';
   }
-  function render() {
-    const t = Date.now();
-    if (S.mode === 'running' && t >= S.endAt) { finish(); return; }
 
+  // Draws S as of now, then waits for the next visible change: the countdown's next whole
+  // second, or the clock's next minute. Nothing runs while the window is hidden.
+  let renderTimer = 0;
+  function render() {
+    clearTimeout(renderTimer);
+    const t = Date.now();
+    const duration = dragMin !== null ? dragMin * 60000 : S.duration;
     let secs, ratio;
     if (S.mode === 'done') {
       secs = Math.min(5999, Math.floor((t - S.endAt) / 1000)); // time past zero
       ratio = 1;
     } else {
-      const rem = S.mode === 'running' ? S.endAt - t : S.remaining;
+      const rem = S.mode === 'running' ? Math.max(0, S.endAt - t) : S.mode === 'idle' ? duration : S.remaining;
       secs = Math.ceil(rem / 1000);
       // Whole seconds, so the ring repaints together with the digits, once a second.
-      ratio = S.mode === 'idle' ? Math.min(S.duration, 3600000) / 3600000 : secs * 1000 / S.sessionTotal;
+      ratio = S.mode === 'idle' ? Math.min(duration, 3600000) / 3600000 : secs * 1000 / S.sessionTotal;
     }
-    const mm = Math.floor(secs / 60), ss = secs % 60;
-    const str = pad2(mm) + pad2(ss);
+    const str = pad2(Math.floor(secs / 60)) + pad2(secs % 60);
     if (str !== lastMain) {
       lastMain = str;
       str.split('').forEach((c, i) => mainDigits[i].set(c));
     }
     renderRing(ratio);
     renderClock();
-    if (S.mode === 'idle') positionHandle();
+    if (S.mode === 'idle') positionHandle(duration);
 
-    // Shown next to the tray icon (macOS menu bar) and in its tooltip
-    const title = S.mode === 'done' ? 'Time’s up'
-      : S.mode === 'idle' ? ''
-      : S.mode === 'paused' ? `Paused ${pad2(mm)}:${pad2(ss)}` : `${pad2(mm)}:${pad2(ss)}`;
-    if (title !== lastTitle) {
-      lastTitle = title;
-      document.title = title || 'Focus Widget';
-      if (api) api.setTitle(title);
-    }
+    if (document.hidden) return;
+    let wait = 60000 - t % 60000;
+    if (S.mode === 'running') wait = S.endAt > t ? (S.endAt - t) % 1000 || 1000 : 1000;
+    else if (S.mode === 'done') wait = 1000 - (t - S.endAt) % 1000;
+    renderTimer = setTimeout(render, wait + 5);
   }
+  document.addEventListener('visibilitychange', () => { render(); blink(); });
 
   let sweepTimer = 0;
   function sweep() {
@@ -433,38 +214,37 @@
     clearTimeout(blinkTimer);
     device.classList.remove('dim');
     const half = { paused: 700, done: 500 }[S.mode];
-    if (!half) return;
+    if (!half || document.hidden) return;   // a hidden window still redraws, so don't blink there
     const flip = () => { device.classList.toggle('dim'); blinkTimer = setTimeout(flip, half); };
     blinkTimer = setTimeout(flip, half);
   }
 
-  function reportState() {
-    if (api) api.reportState({ mode: S.mode, sound: P.sound, stats: statsText() });
-  }
-  function stateChanged() {
+  const MODES = ['idle', 'running', 'paused', 'done'];
+  function apply(s) {
+    if (!s || !MODES.includes(s.mode) || s.seq < S.seq) return; // an older snapshot arrived late
+    const modeChanged = s.mode !== S.mode;
+    S = s;
+    if (!dragging) dragMin = null;
     device.dataset.mode = S.mode;
-    blink();
+    device.dataset.sound = S.sound ? 'on' : 'off';
+    if (modeChanged) blink();
     const label = { idle: 'Start (Space)', running: 'Pause (Space)', paused: 'Resume (Space)', done: 'Dismiss (Space)' }[S.mode];
     primaryB.title.textContent = label;
     digitsTitle.textContent = label;
     resetB.title.textContent = S.mode === 'done' ? 'Start again' : 'Reset (R)';
+    if (S.event === 'start') sweep();
+    if (SAY[S.event]) announce(SAY[S.event](S));
     render();
-    reportState();
   }
 
-  function act(action, value) {
+  function act(type, minutes) {
+    if (api) api.act(type, minutes);
+  }
+  function onAction(action, value) {
     switch (action) {
-      case 'primary': primaryAction(); break;
-      case 'reset': if (S.mode === 'done') startAgain(); else reset(); break;
-      case 'again': startAgain(); break;
-      case 'plus': adjust(1); break;
-      case 'sound': toggleSound(); break;
-      case 'preset': {
-        const m = Number(value);
-        if (PRESETS.includes(m)) startPreset(m);
-        break;
-      }
-      default: break;
+      case 'reset': act(S.mode === 'done' ? 'again' : 'reset'); break;
+      case 'preset': act('preset', Number(value)); break;
+      default: act(action); break;  // primary, plus, sound
     }
   }
 
@@ -479,37 +259,41 @@
   }
   function dragTo(e) {
     let m = Math.round(polar(e).a / 6);
-    if (m === 0) m = S.lastDrag !== null && S.lastDrag < 30 ? 1 : 60;
-    if (S.lastDrag !== null) {               // stop the value jumping across 12 o'clock
-      if (S.lastDrag >= 45 && m <= 15) m = 60;
-      else if (S.lastDrag <= 15 && m >= 45) m = 1;
+    if (m === 0) m = lastDrag !== null && lastDrag < 30 ? 1 : 60;
+    if (lastDrag !== null) {                 // stop the value jumping across 12 o'clock
+      if (lastDrag >= 45 && m <= 15) m = 60;
+      else if (lastDrag <= 15 && m >= 45) m = 1;
     }
     m = Math.max(1, m);
-    S.lastDrag = m;
-    if (m !== S.duration / 60000) setDuration(m);
+    lastDrag = m;
+    if (m !== dragMin) {
+      dragMin = m;
+      render();
+    }
   }
 
   screen.addEventListener('click', (e) => {
     const target = e.target.closest('[data-action]');
-    if (target) act(target.dataset.action, target.dataset.min);
+    if (target) onAction(target.dataset.action, target.dataset.min);
   });
   screen.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || S.mode !== 'idle') return;
     if (e.target.closest('[data-action]')) return;
     if (polar(e).dist < 110) return;         // only the ring band sets the time
-    S.dragging = true;
-    S.lastDrag = null;
+    dragging = true;
+    lastDrag = null;
     try { screen.setPointerCapture(e.pointerId); } catch (err) {}
     device.classList.add('dragging');
     dragTo(e);
     e.preventDefault();
   });
-  screen.addEventListener('pointermove', (e) => { if (S.dragging) dragTo(e); });
+  screen.addEventListener('pointermove', (e) => { if (dragging) dragTo(e); });
   const endDrag = () => {
-    if (!S.dragging) return;
-    S.dragging = false;
+    if (!dragging) return;
+    dragging = false;
     device.classList.remove('dragging');
-    reportState();
+    if (dragMin !== null && dragMin * 60000 !== S.duration) act('set', dragMin);
+    else dragMin = null;
   };
   screen.addEventListener('pointerup', endDrag);
   screen.addEventListener('pointercancel', endDrag);
@@ -520,42 +304,41 @@
     e.preventDefault();
     wheelAcc += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
     while (Math.abs(wheelAcc) >= 40) {
-      adjust(wheelAcc < 0 ? 1 : -1);
+      act(wheelAcc < 0 ? 'plus' : 'minus');
       wheelAcc -= 40 * Math.sign(wheelAcc);
     }
   }, { passive: false });
 
-  document.addEventListener('contextmenu', (e) => {
-    if (!api) return;                        // keep the normal menu in a browser preview
-    e.preventDefault();
-    api.openMenu();
-  });
+  // Right-click opens the app's menu through the --custom-contextmenu rule in widget.css.
+  function openMenu() {
+    const r = screen.getBoundingClientRect();
+    api.openMenu(r.left + r.width / 2, r.top + r.height / 2);
+  }
 
   /* ---------- Keyboard (when the widget has focus) ---------- */
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
-    if (k === ' ' || k === 'Spacebar' || k === 'Enter') { e.preventDefault(); primaryAction(); }
-    else if (k === 'r' || k === 'R') reset();
-    else if (k === 'ArrowUp' || k === 'ArrowRight') { e.preventDefault(); adjust(1); }
-    else if (k === 'ArrowDown' || k === 'ArrowLeft') { e.preventDefault(); adjust(-1); }
-    else if (k === 'm' || k === 'M') toggleSound();
-    else if (k === 'Escape') { if (S.mode === 'done') reset(); }
-    else if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) { if (api) { e.preventDefault(); api.openMenu(); } }
-    else if (/^[1-7]$/.test(k)) startPreset(PRESETS[Number(k) - 1]);
+    if (k === ' ' || k === 'Spacebar' || k === 'Enter') { e.preventDefault(); act('primary'); }
+    else if (k === 'r' || k === 'R') act('reset');
+    else if (k === 'ArrowUp' || k === 'ArrowRight') { e.preventDefault(); act('plus'); }
+    else if (k === 'ArrowDown' || k === 'ArrowLeft') { e.preventDefault(); act('minus'); }
+    else if (k === 'm' || k === 'M') act('sound');
+    else if (k === 'Escape') { if (S.mode === 'done') act('reset'); }
+    else if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) { if (api) { e.preventDefault(); openMenu(); } }
+    else if (/^[1-7]$/.test(k)) act('preset', PRESETS[Number(k) - 1]);
   });
 
-  /* ---------- Commands from the tray and right-click menu ---------- */
-  if (api) {
-    api.onCommand((cmd) => {
-      if (!cmd || typeof cmd.type !== 'string') return;
-      act(cmd.type, cmd.minutes);
-    });
-  }
-
   /* ---------- Go ---------- */
-  device.dataset.sound = P.sound ? 'on' : 'off';
-  stateChanged();
-  setInterval(() => { render(); syncAudio(); }, 200);
-  setInterval(reportState, 60000);           // keeps the day's tally in the menu current after midnight
+  if (api) {
+    api.onState(apply);
+    // The window shows once the first state is drawn. Not in an animation frame: a hidden
+    // window gets none.
+    api.getState().then((s) => {
+      apply(s);
+      api.ready();
+    });
+  } else {
+    apply(Object.assign({}, S, { seq: 0 }));
+  }
 })();

@@ -1,6 +1,7 @@
-node_modules/
 dist/
+*.syso
 *.log
 .DS_Store
 Thumbs.db
-wails/focus-widget-spike
+# Left over from the Electron versions
+node_modules/

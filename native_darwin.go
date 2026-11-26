@@ -2,7 +2,7 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework AppKit
+#cgo LDFLAGS: -framework AppKit -framework CoreGraphics
 #import <AppKit/AppKit.h>
 
 // While a timer runs, opt out of App Nap so the tray countdown and the alarm stay on time
@@ -27,6 +27,8 @@ static bool controlKeyDown(void) {
 	NSEventModifierFlags flags = e ? e.modifierFlags : [NSEvent modifierFlags];
 	return (flags & NSEventModifierFlagControl) != 0;
 }
+
+static bool mainDisplayAsleep(void) { return CGDisplayIsAsleep(CGMainDisplayID()); }
 */
 import "C"
 
@@ -48,3 +50,6 @@ func stayAwake(on bool) {
 // controlClick reports whether the tray click being handled is a Control-click, which macOS
 // treats as a right-click.
 func controlClick() bool { return bool(C.controlKeyDown()) }
+
+// displayAsleep reports whether the main display is asleep, as it is during a dark wake.
+func displayAsleep() bool { return bool(C.mainDisplayAsleep()) }

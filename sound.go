@@ -125,6 +125,12 @@ func (s *Chime) Ring(at time.Time) {
 	s.stopAlarm()
 	s.mu.Unlock()
 	go func() {
+		// A late ring was missed while the computer slept. A dark wake (a background wake with
+		// the display off) has no audio, and if the output fails to start then, oto stops it
+		// for good, so the alarm waits for the display.
+		for time.Until(at) < -time.Second && displayAsleep() {
+			time.Sleep(time.Second)
+		}
 		ctx, err := s.context()
 		if err != nil {
 			return

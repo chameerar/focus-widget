@@ -19,6 +19,7 @@ import (
 func init() {
 	debugf = log.Printf
 	configDir = os.Getenv("FOCUS_WIDGET_CONFIG")
+	instanceID += ".measure" // runs beside an installed copy
 	measureHook = func(a *App) {
 		go func() {
 			s := bufio.NewScanner(os.Stdin)

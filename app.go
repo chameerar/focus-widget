@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/png"
 	"log"
 	"runtime"
 	"sync"
@@ -136,9 +140,24 @@ func (a *App) refreshMenus() {
 func (a *App) toggleVisible() {
 	if a.win.IsVisible() {
 		a.win.Hide()
+		a.refreshMenus()
 	} else {
-		a.win.Show()
+		a.showWidget()
 	}
+}
+
+// showWidget brings the widget to the front and gives it the keyboard.
+func (a *App) showWidget() {
+	if !a.ready.Load() {
+		return // Ready shows the window once the page has drawn
+	}
+	if runtime.GOOS == "darwin" && !a.win.IsVisible() {
+		// Hidden, covered or on another desktop (Space). Activating the app doesn't switch
+		// desktops, but a window that is hidden and shown again opens on the current one.
+		a.win.Hide()
+	}
+	a.win.Show()
+	a.win.Focus()
 	a.refreshMenus()
 }
 
@@ -169,11 +188,7 @@ func (a *App) State(s Snapshot) {
 
 func (a *App) Title(t string) {
 	if runtime.GOOS == "darwin" {
-		if t == "" {
-			a.tray.SetLabel("")
-		} else {
-			a.tray.SetLabel(" " + t)
-		}
+		a.tray.SetLabel(t) // the icon's padding spaces it from the icon
 	}
 	if t == "" {
 		a.tray.SetTooltip(appName)
@@ -389,12 +404,20 @@ func (a *App) createWindow(set Settings) {
 		go a.refreshMenus()
 	})
 	a.win.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) { a.moved() })
+	if runtime.GOOS == "darwin" {
+		// IsVisible follows the window's occlusion state on macOS. It changes a moment after
+		// Show, and when the widget is covered or on another Space, so Show or Hide widget is
+		// relabelled when it does.
+		for _, ev := range []events.WindowEventType{events.Mac.WindowShow, events.Mac.WindowHide} {
+			a.win.OnWindowEvent(ev, func(*application.WindowEvent) { a.refreshMenus() })
+		}
+	}
 }
 
 func (a *App) createTray() {
 	a.tray = a.app.SystemTray.New()
 	if runtime.GOOS == "darwin" {
-		a.tray.SetTemplateIcon(trayTemplateIcon)
+		a.tray.SetTemplateIcon(menuBarIcon(trayTemplateIcon))
 	} else {
 		a.tray.SetIcon(trayIcon)
 	}
@@ -402,11 +425,55 @@ func (a *App) createTray() {
 	trayMenu := application.NewMenu()
 	a.menus = append(a.menus, a.buildMenu(trayMenu))
 	a.tray.SetMenu(trayMenu)
-	if runtime.GOOS == "windows" {
-		a.tray.OnClick(a.toggleVisible)
+	// Tray clicks arrive on the main thread, which the core may be waiting for while it holds
+	// its lock, so they hand off to a goroutine. A right-click opens the menu.
+	switch runtime.GOOS {
+	case "darwin":
+		a.tray.OnClick(func() {
+			if controlClick() {
+				a.tray.OpenMenu()
+				return
+			}
+			go a.showWidget()
+		})
+	case "windows":
+		a.tray.OnClick(func() { go a.toggleVisible() })
 	}
 
 	ctx := a.app.ContextMenu.New()
 	a.menus = append(a.menus, a.buildMenu(ctx.Menu))
 	a.app.ContextMenu.Add("widget", ctx)
+}
+
+// macMenu is the macOS application menu. It never shows, since the app has no menu bar, but
+// its shortcuts work while the widget has focus. The default menu's Minimize, zoom and full
+// screen would leave the widget in a state its own menus can't undo, so only Close (which
+// hides the widget) and Quit are kept.
+func macMenu() *application.Menu {
+	m := application.NewMenu()
+	app := m.AddSubmenu(appName)
+	app.AddRole(application.CloseWindow)
+	app.AddRole(application.Quit)
+	return m
+}
+
+// menuBarIcon pads the 16 pt tray icon to 22 pt. Wails scales the image to the menu bar's
+// height (22 pt), which drew the icon larger than other menu bar icons.
+func menuBarIcon(icon []byte) []byte {
+	src, err := png.Decode(bytes.NewReader(icon))
+	if err != nil {
+		log.Printf("tray icon: %v", err)
+		return icon
+	}
+	b := src.Bounds()
+	side := b.Dx() * 22 / 16
+	dst := image.NewNRGBA(image.Rect(0, 0, side, side))
+	at := image.Pt((side-b.Dx())/2, (side-b.Dy())/2)
+	draw.Draw(dst, b.Sub(b.Min).Add(at), src, b.Min, draw.Src)
+	var out bytes.Buffer
+	if err := png.Encode(&out, dst); err != nil {
+		log.Printf("tray icon: %v", err)
+		return icon
+	}
+	return out.Bytes()
 }

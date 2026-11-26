@@ -45,10 +45,11 @@ Version 0.2 is a rewrite in Go, so it installs as a new app. Uninstall the old v
 - **Your own length:** drag around the colored ring or scroll over the dial.
 - **Sound:** click the bell on the screen.
 - **Menu:** right-click the widget, or use the tray icon (menu bar on macOS), for quick timers, sound, keep on top, size, today's tally, hide and quit.
+- **Tray icon:** on macOS, click the menu bar icon to bring the widget to the front, on the desktop you are using; right-click or Control-click it for the menu. On Windows, click it to show or hide the widget and right-click it for the menu.
 
 When time is up, the ring flashes, the digits turn red and count the time past zero, and a chime plays for about 25 seconds. Click the digits to dismiss it, or press +1 for one more minute.
 
-Closing the window (for example with Alt+F4) only hides it. Use **Show widget** or **Quit Focus Widget** in the tray menu.
+Closing the window (for example with Alt+F4) only hides it. Click the tray icon or use **Show widget** in the tray menu to bring it back, and **Quit Focus Widget** to quit. Opening the app again while it runs also brings the widget forward.
 
 ### Keyboard shortcuts
 
@@ -97,6 +98,7 @@ To build installers, run the script for your system from the repository root. Th
 | `core.go`, `timer.go` | The timer, today's tally, the tray countdown and when to wake up |
 | `sound.go` | The chime, generated and played natively |
 | `store.go` | Saves settings to `settings.json` |
+| `native_darwin.go` | macOS only: keeps App Nap from delaying a running timer, and spots Control-clicks on the menu bar icon |
 | `renderer/` | The widget page: it draws the dial from the state Go sends and passes clicks and keys back |
 | `assets/` | App and tray icons |
 | `build/` | Packaging for each system |

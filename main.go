@@ -30,6 +30,9 @@ var trayIcon []byte
 // measureHook drives the app from stdin in measurement builds (measure.go).
 var measureHook func(*App)
 
+// instanceID keeps the app single-instance; measurement builds use their own.
+var instanceID = "com.example.focuswidget"
+
 func main() {
 	store, err := NewStore()
 	if err != nil {
@@ -51,16 +54,16 @@ func main() {
 		Windows:     application.WindowsOptions{WebviewUserDataPath: webviewDataPath()},
 		Linux:       application.LinuxOptions{ProgramName: "focus-widget"},
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.example.focuswidget",
-			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
-				a.win.Show()
-				a.refreshMenus()
-			},
+			UniqueID:               instanceID,
+			OnSecondInstanceLaunch: func(application.SecondInstanceData) { a.showWidget() },
 		},
 	})
 	a.core = NewCore(set, store, a, &Chime{})
 	a.createWindow(set)
 	a.createTray()
+	if runtime.GOOS == "darwin" {
+		a.app.Menu.Set(macMenu())
+	}
 	a.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		a.core.Start()
 		if measureHook != nil {

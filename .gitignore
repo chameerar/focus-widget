@@ -1,5 +1,7 @@
-node_modules/
 dist/
+*.syso
 *.log
 .DS_Store
 Thumbs.db
+# Left over from the Electron versions
+node_modules/

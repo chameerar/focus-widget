@@ -5,46 +5,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm ci            # install (Node 20+; CI uses Node 22)
-npm start         # run the app from source (electron .)
-npm run dist      # build an installer for the current OS into dist/
+go run -tags private_mac_apis .   # run on macOS (the tag makes the window transparent)
+go run .                          # run on Windows
+go run -tags gtk3 .               # run on Linux (needs libgtk-3-dev libwebkit2gtk-4.1-dev)
+go test ./...                     # unit tests; add -tags gtk3 on Linux
+go vet ./...
+build/macos/package.sh arm64      # or amd64; DMG in dist/
+build/windows/package.sh          # Git Bash with NSIS; installer in dist/
+build/linux/package.sh            # .deb and .tar.gz in dist/
 ```
 
-There is no test suite, linter, bundler or build step. The source files are what ships. Verify changes by running `npm start`. On Linux without a compositor: `npm start -- --enable-transparent-visuals --disable-gpu`.
+There is no bundler or npm step: `renderer/` is embedded as is with `go:embed`. `renderer/index.html` can be opened directly in a browser for a visual check: `window.widget` is absent there and the page shows a static idle dial.
 
-`renderer/index.html` can also be opened directly in a browser for a quick visual check: `window.widget` is absent there, and the renderer skips all app calls (`if (api)`).
+Build tags: `production` for installers (no DevTools, enables "Open at login"), `private_mac_apis` on macOS (transparent webview), `gtk3` on Linux (GTK 3 and WebKitGTK 4.1 instead of GTK 4), `measure` for a build driven from stdin (see `measure.go`; `FOCUS_WIDGET_CONFIG` points settings at a test folder, and it uses its own single-instance ID so it runs beside an installed copy).
 
 ## Architecture
 
-A frameless, transparent Electron app with three source files plus CSS. Plain JavaScript, `'use strict'`, CommonJS in the main process, a single IIFE in the renderer, no dependencies at runtime.
+A Wails v3 app: one Go `main` package at the repository root plus the page in `renderer/` (plain JavaScript, `'use strict'`, a single IIFE, no dependencies).
 
-**The renderer owns all timer state.** `renderer/widget.js` holds the mode (`idle | running | paused | done`), durations, alarm scheduling and today's tally. The main process only knows a summary (`mode`, `sound`, `stats`) that the renderer pushes to it so it can label the tray and right-click menus.
+**Go owns all state.** `core.go` holds the `Timer` (`timer.go`: `idle | running | paused | done`, pure methods that take `now`), the `Settings` (`store.go`), the sound (`sound.go`) and the one wake-up timer. The page draws snapshots and sends input. `app.go` is the Wails layer: window, tray, menus, notifications and the bound `Widget` service. `Core` talks to it only through the `UI` interface, and to sound through `Sound`, so `core_test.go` runs on a fake clock without a window.
 
-**IPC is a fixed, narrow contract** defined in `preload.js`:
-- Renderer to main: `widget:state`, `widget:title`, `widget:menu`, `widget:notify`. Every `ipcMain` handler in `main.js` checks the sender with `fromWidget(e)`, validates types, and truncates strings. New messages must follow the same pattern and be added in all three places (preload, main, renderer).
-- Main to renderer: `widget:command` with `{ type, minutes? }`. Menu items in `buildMenu()` send these, and the renderer routes them through `act()` (`primary`, `reset`, `again`, `plus`, `sound`, `preset`). Clicks inside the SVG use the same `act()` via `data-action` attributes, so menu and on-screen actions share one code path.
+**Locking:** every change goes through `Core.mu`, and the core calls `UI` methods while holding it, so the page, tray and menus see changes in order. `App.mu` is only ever taken after `Core.mu`, never before; UI methods must not call back into the core. Wails delivers menu clicks, page calls and window events on goroutines, never the main thread, which is what makes this safe. Tray icon clicks are the exception: they arrive on the main thread, which the core may be waiting for with its lock held, so the `OnClick` handlers hand off to a goroutine (`go a.showWidget()`) and must not take either lock themselves.
 
-**Values duplicated across processes** that must stay in sync: `PRESETS` (in both `main.js` and `widget.js`; keys 1 to 7 index into it), the mode list (`MODES` in main), and the keyboard help text in `index.html` and the README.
+**The page's calls are a fixed, narrow contract** (`Widget` in `app.go`, wrapped by `renderer/bridge.js`):
+- Page to Go: `GetState()`, `Ready()` (shows the window after the first draw), `Act({type, minutes})`, `OpenMenu(x, y)`. Each checks the caller is the `main` window. `Core.Act` refuses unknown types; `preset` must be one of `Presets`, `set` must be 1 to 99.
+- Go to page: the `widget:state` event with a `Snapshot` (`mode`, durations in ms, `endAt` in Unix ms, `sound`, `event`, `seq`). The page drops a snapshot with a lower `seq` and uses `event` for announcements and the start sweep.
+- Actions: `primary`, `reset`, `again`, `plus`, `minus`, `sound`, `preset`, `set`. Menu items call `Core.Act` directly.
+- New calls must be added in `app.go`, `bridge.js` and `widget.js`, and validated in Go.
 
-**Persistence is split:**
-- Main: `widget-state.json` in `app.getPath('userData')` stores `size`, `alwaysOnTop`, `x`, `y`.
-- Renderer: `localStorage` key `focus-widget:v1` stores `sound`, `lastMinutes`, and the daily tally (`day`, `count`, `minutes`).
+**Values duplicated across Go and the page** that must stay in sync: `Presets` (`timer.go`) and `PRESETS` (`widget.js`; keys 1 to 7 index into it), the mode names, and the keyboard help text in `index.html` and the README.
 
-**Timing model:** countdowns use wall clock (`S.endAt = Date.now() + ...`) and `render()` polls every 200 ms, so accuracy doesn't depend on timers firing on time. A running AudioContext renders silence nonstop, so it stays suspended until `ARM_AHEAD` (15 s) before zero. `syncAudio()`, on the same 200 ms tick, then resumes it and, once a later tick sees `currentTime` advancing (a starting context can report `running` with a stalled clock), schedules the chime in Web Audio (`scheduleAlarm`) so it rings exactly at zero. It suspends the context again once the chimes end. Start, resume, adjust and sound toggles only `cancelAlarm()`; the tick re-arms against the new end time, and `finish()` rings at once if nothing was armed. This relies on `backgroundThrottling: false` and the `autoplay-policy` switch in `main.js`; keep both.
+**Persistence:** one file, `settings.json`, in `os.UserConfigDir()/Focus Widget` (the folder the Electron versions used): size, keep on top, position, sound, last length, today's tally. On first run it imports size, keep on top and position from the Electron `widget-state.json` and never changes that file. Writes go through a temp file and rename.
 
-**Keep it idle when nothing changes:** a transparent window that repaints every frame costs several percent CPU, even when hidden (because of `backgroundThrottling: false`). While running, the ring changes once a second with no transition. The paused and done blinks toggle `.dim` on `#device` from `blink()` instead of using CSS animations. `render()` skips DOM writes when values are unchanged (`lastMain`, `lastHandle`, ...).
+**Timing model:** countdowns use wall-clock time with the monotonic reading stripped (`Core.now`), so a run that ends during sleep is done on wake. `Core.schedule` sets a single `time.AfterFunc`: while running, the next tray-title change (whole seconds), `armAhead` (1 s) before zero to start the chime, and zero; otherwise an hourly check for the day's tally. Nothing wakes more often while idle. Waits are capped at an hour because the clock timers run on stops during sleep. While running on macOS, `stayAwake` (`native_darwin.go`) holds an `NSProcessInfo` activity so App Nap doesn't delay the wake-ups when the widget is hidden.
 
-**UI:** the whole dial (ring segments, seven-segment digits, buttons, presets) is generated as SVG in `widget.js` inside a 300x300 viewBox. Visual state is CSS driven by `data-mode` and `data-sound` on `#device`; hover on `#screen` swaps the clock for the control pad and, when idle, shows presets. `.device` is the window drag region (`app-region: drag`) and `.bezel` opts out, so the frame moves the window and the dial stays interactive. On Windows/Linux a right-click on the drag region fires `system-context-menu`, which `main.js` redirects to the app menu.
+**Sound:** `Chime` synthesizes the alarm (880, 880 and 1175 Hz beeps with exponential envelopes, 12 rounds 2.2 s apart) and plays it with oto. `Ring(at)` starts a player with leading silence so the chime starts at `at`. The audio output opens on first use and is suspended whenever nothing plays. `Cancel` stops the alarm but lets a confirm tone finish.
 
-**Window behavior:** closing hides the window (only `before-quit` sets `quitting`); the app lives in the tray, hides the macOS Dock icon, and holds a single-instance lock. "Open at login" is offered only in packaged builds on macOS/Windows; DevTools only in unpackaged runs.
+**Keep it idle when nothing changes:** a transparent window that repaints costs CPU even when hidden. The page renders with one timeout to the next visible change (the countdown's next whole second, or the clock's next minute) and nothing while `document.hidden`. While running the ring changes once a second with no transition. The paused and done blinks toggle `.dim` on `#device` from `blink()` instead of CSS animations. The tray title updates once a second while running, which is the main remaining running cost.
+
+**UI:** the whole dial is SVG generated in `widget.js` in a 300x300 viewBox. Visual state is CSS driven by `data-mode` and `data-sound` on `#device`. `.face` is the drag region (`--wails-draggable: drag`) and `.bezel` opts out. Right-click opens the Go menu through `--custom-contextmenu: widget` on `.device`; the menu key and Shift+F10 call `OpenMenu`. `#screen` sizes itself with `aspect-ratio`, because WebKit resolved `height:100%` against the bezel's padded height and made it oval.
+
+**Window behavior:** closing hides the window (only `App.quit` sets `quitting`). The app lives in the tray, hides the macOS Dock icon (accessory policy and `LSUIElement`) and is single-instance. `showWidget` shows and focuses the window; it is used for a click on the macOS menu bar icon, **Show widget** and a second launch. On macOS, Wails' `IsVisible` follows the occlusion state (false when hidden, fully covered or on another Space, and updated a moment after `Show`), so the menus are refreshed on `events.Mac.WindowShow`/`WindowHide`, and `showWidget` hides a window that isn't visible before showing it: activating the app doesn't switch Spaces, but a window shown again opens on the current one. A right-click or Control-click (`controlClick` in `native_darwin.go`) opens the tray menu on macOS; on Windows a click toggles the widget. When a timer ends the window is shown without focus, so it doesn't take the keyboard from another app. The macOS application menu (`macMenu`) never shows, but its shortcuts work while the widget has focus, so it keeps only Close (Cmd+W, which hides the widget) and Quit; Wails' default menu would bind Minimize, zoom and full screen. Wails scales the tray image to the menu bar height (22 pt), so `menuBarIcon` pads the 16 pt template icon to 22 pt, and the countdown label has no leading space because the padding separates it from the icon. "Open at login" uses Wails autostart and is offered only in `production` builds on macOS and Windows. Notifications start on first use (macOS needs an app bundle and the user's permission).
 
 ## Security constraints to preserve
 
-- The page runs with `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`. Never expose raw `ipcRenderer`.
-- The CSP in `index.html` is `default-src 'none'` with `'self'` for scripts and styles: no inline scripts or styles, no remote resources. Set styles via classes or `element.style` from JS, not `style=""` attributes in HTML.
-- Navigation, `window.open`, and all permission requests are denied in `main.js`. The app makes no network requests.
-- Dependencies in `package.json` are pinned to exact versions, and GitHub Actions are pinned to commit SHAs with a version comment. Dependabot uses a 14-day cooldown. Keep new pins in the same form.
+- The page gets only the four `Widget` calls. Validate every argument in Go; never bind another service (the notifications service is started by hand so it isn't exposed to the page).
+- Wails has no permission system for its own runtime calls (window, clipboard, dialogs and so on are callable from page script) and no navigation hook. The defences are the CSP and the page having no links, forms or remote content. Keep it that way.
+- The CSP in `index.html` is `default-src 'none'` with `'self'` for scripts, styles and `connect-src` (the Wails runtime calls Go with `fetch`), plus `base-uri 'none'` and `form-action 'none'`. No inline scripts or styles: set styles via classes or `element.style` from JS.
+- Web permission requests (camera, microphone, location, notifications, clipboard read) are denied in the window options.
+- Go modules are pinned in `go.mod`/`go.sum`, go-winres is a pinned `tool`, and GitHub Actions are pinned to commit SHAs with a version comment. Dependabot uses a 14-day cooldown; only pick releases at least 14 days old. Release builds run with the Go module cache off.
 
 ## Releasing
 
-Bump `version` in `package.json`, commit, then push a `vX.Y.Z` tag. `.github/workflows/release.yml` builds DMG (arm64, x64), NSIS (x64) and AppImage (x64) and publishes a GitHub release. Running the workflow manually builds installers without publishing. Builds are unsigned (`identity: "-"`, no notarization), which is why macOS notifications don't appear in release builds.
+Bump `VERSION`, commit, then push a `vX.Y.Z` tag that matches it. `.github/workflows/release.yml` tests, then builds DMGs (arm64, x64), an NSIS installer (x64, on windows-2022, which has NSIS) and a .deb plus .tar.gz (x64, on ubuntu-22.04 for an older glibc), and publishes a GitHub release. Running the workflow manually builds without publishing. Builds are ad-hoc signed on macOS and unsigned on Windows.

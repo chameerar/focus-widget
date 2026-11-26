@@ -2,7 +2,7 @@
 # which gives the community time to catch a compromised package first.
 version: 2
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly

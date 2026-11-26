@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Focus Widget</title>
 <link rel="stylesheet" href="widget.css">
@@ -20,6 +20,8 @@
   </div>
   <p class="sr-only" id="help">Space starts or pauses. R resets. Up and down arrows change the time by a minute. Keys 1 to 7 start quick timers. M turns sound on or off.</p>
   <p class="sr-only" id="live" aria-live="polite"></p>
-  <script src="widget.js"></script>
+  <script type="module" src="/wails/runtime.js"></script>
+  <script defer src="bridge.js"></script>
+  <script defer src="widget.js"></script>
 </body>
 </html>
